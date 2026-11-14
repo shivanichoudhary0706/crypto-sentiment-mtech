@@ -6,6 +6,8 @@ Run from the project root:
     python -m signals.run_signals --every 300    # keep running, one pass every 5 minutes
     python -m signals.run_signals --skip-features
     python -m signals.run_signals --freq 4h --skip-features --every 900   # 4h signals
+    python -m signals.run_signals --freq 1h --model models\\<version>.joblib --every 300
+        # frozen model: trained once on history (signals.train_frozen), predict only
 
 Each pass first brings features_bar up to date (incremental feature job) unless
 --skip-features is given, then retrains the model on the most recent labelled
@@ -28,12 +30,15 @@ from config.logging_config import get_logger
 from signals import store
 from signals.config import FREQS, SignalConfig, load_config
 from signals.dataset import VOLUME_WINDOW, build_model_frame, training_rows
+from signals.frozen import FrozenModel, check_compatible
+from signals.frozen import load as load_frozen
 from signals.model import predict_up, to_action, train
 
 logger = get_logger(__name__)
 
 
-def generate_signals(features: pd.DataFrame, cfg: SignalConfig) -> tuple[pd.DataFrame, dict]:
+def generate_signals(features: pd.DataFrame, cfg: SignalConfig,
+                     frozen: FrozenModel | None = None) -> tuple[pd.DataFrame, dict]:
     """Pure function: features_bar rows -> one signal per target for its newest bar.
 
     Returns (signals, info). Targets with too little history are left out and
@@ -49,6 +54,20 @@ def generate_signals(features: pd.DataFrame, cfg: SignalConfig) -> tuple[pd.Data
               .groupby("coin").tail(1).set_index("coin"))
     if latest.empty:
         return pd.DataFrame(), info
+
+    if frozen is not None:
+        missing = check_compatible(frozen, frame.columns)
+        if missing:
+            raise RuntimeError(f"Live features lack columns the frozen model needs: {missing}")
+        eligible = [c for c in cfg.targets if c in latest.index]
+        for c in cfg.targets:
+            if c not in latest.index:
+                info["skipped"][c] = "no price bars"
+        if not eligible:
+            return pd.DataFrame(), info
+        model, version = frozen.model, frozen.version
+        info.update(n_train=model.n_train, base_rate=model.base_rate, model_version=version)
+        return _signal_frame(latest.loc[eligible].reset_index(), model, version, cfg), info
 
     # One pooled model; the cutoff is set by the OLDEST "latest bar" so that no
     # target's prediction can see a label from its own future.
@@ -73,7 +92,10 @@ def generate_signals(features: pd.DataFrame, cfg: SignalConfig) -> tuple[pd.Data
     version = f"hgb-{cfg.freq}-h{cfg.horizon_bars}-{model.train_end:%Y%m%dT%H%M}"
     info.update(n_train=model.n_train, base_rate=model.base_rate, model_version=version)
 
-    now_rows = latest.loc[eligible].reset_index()
+    return _signal_frame(latest.loc[eligible].reset_index(), model, version, cfg), info
+
+
+def _signal_frame(now_rows: pd.DataFrame, model, version: str, cfg: SignalConfig) -> pd.DataFrame:
     prob = predict_up(model, now_rows)
     out = pd.DataFrame({
         "bucket": now_rows["bucket"],
@@ -88,10 +110,11 @@ def generate_signals(features: pd.DataFrame, cfg: SignalConfig) -> tuple[pd.Data
         "model_version": version,
         "n_train": model.n_train,
     })
-    return out, info
+    return out
 
 
-def run_once(conn, cfg: SignalConfig, with_features: bool = True) -> int:
+def run_once(conn, cfg: SignalConfig, with_features: bool = True,
+             frozen: FrozenModel | None = None) -> int:
     from features.config import load_config as load_feature_config
     feature_cfg = load_feature_config()
     if with_features:
@@ -109,7 +132,7 @@ def run_once(conn, cfg: SignalConfig, with_features: bool = True) -> int:
     since = datetime.now(timezone.utc) - lookback
     t0 = time.perf_counter()
     features = store.fetch_features(conn, feature_cfg.table, cfg.targets + cfg.input_coins, cfg.freq, since)
-    signals, info = generate_signals(features, cfg)
+    signals, info = generate_signals(features, cfg, frozen)
     n = store.upsert_signals(conn, cfg.table, signals)
 
     for coin, why in info["skipped"].items():
@@ -139,6 +162,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Do not run the incremental feature job before generating signals")
     p.add_argument("--freq", choices=FREQS,
                    help="Bar size to generate signals for (default: signal_model.freq in config.yaml)")
+    p.add_argument("--model", metavar="PATH",
+                   help="Use a frozen model file (from signals.train_frozen) instead of retraining")
     args = p.parse_args(argv)
     if args.every is not None and args.every < 30:
         p.error("--every must be at least 30 seconds")
@@ -153,6 +178,15 @@ def _connect():
 def main(argv=None) -> None:
     args = parse_args(argv)
     cfg = load_config(args.freq)
+    frozen = None
+    if args.model:
+        frozen = load_frozen(args.model)
+        if frozen.freq != cfg.freq or frozen.horizon_bars != cfg.horizon_bars:
+            raise SystemExit(f"Model {frozen.version} is {frozen.freq}/h{frozen.horizon_bars}, "
+                             f"runner is {cfg.freq}/h{cfg.horizon_bars}")
+        logger.info("Frozen model %s (trained %s -> %s, %d rows) -- predict only, no retraining",
+                    frozen.version, frozen.meta.get("train_start"), frozen.meta.get("train_end"),
+                    frozen.meta.get("n_train", 0))
     logger.info("Signal job: targets=%s inputs=%s freq=%s horizon=%d bar(s) BUY>=%.2f SELL<=%.2f "
                 "train_window=%d bars",
                 list(cfg.targets), list(cfg.input_coins), cfg.freq, cfg.horizon_bars,
@@ -160,7 +194,7 @@ def main(argv=None) -> None:
     conn = _connect()
     if not args.every:
         try:
-            run_once(conn, cfg, not args.skip_features)
+            run_once(conn, cfg, not args.skip_features, frozen)
         finally:
             conn.close()
         return
@@ -172,7 +206,7 @@ def main(argv=None) -> None:
             try:
                 if conn is None or conn.closed:
                     conn = _connect()
-                run_once(conn, cfg, not args.skip_features)
+                run_once(conn, cfg, not args.skip_features, frozen)
                 failures = 0
             except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
                 failures += 1

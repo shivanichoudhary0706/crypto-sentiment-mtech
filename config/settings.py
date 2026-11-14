@@ -36,8 +36,7 @@ class Settings:
         # --- Non-secret settings (from config.yaml) ---
         self.coins = yaml_cfg["coins"]
         self.kafka_topics = yaml_cfg["kafka"]["topics"]
-        self.kafka_consumer_group = yaml_cfg["kafka"]["consumer_group"]
-
+        self.kafka_consumer_group = os.getenv("KAFKA_CONSUMER_GROUP", yaml_cfg["kafka"]["consumer_group"])
         self.news_rss_feeds = yaml_cfg["sentiment_sources"]["news_rss"]["feeds"]
         self.news_poll_interval = yaml_cfg["sentiment_sources"]["news_rss"]["poll_interval_seconds"]
 

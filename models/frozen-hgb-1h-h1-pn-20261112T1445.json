@@ -1,0 +1,61 @@
+{
+  "version": "frozen-hgb-1h-h1-pn-20261112T1445",
+  "freq": "1h",
+  "horizon_bars": 1,
+  "targets": [
+    "SOL/USDT",
+    "LTC/USDT",
+    "LINK/USDT"
+  ],
+  "input_coins": [
+    "BTC/USDT",
+    "ETH/USDT"
+  ],
+  "variant": "price+news",
+  "train_start": "2024-01-01 00:00:00+00:00",
+  "train_end": "2025-01-31 22:00:00+00:00",
+  "n_train": 28581,
+  "rows_per_coin": {
+    "LINK/USDT": 9527,
+    "LTC/USDT": 9527,
+    "SOL/USDT": 9527
+  },
+  "up_rate": 0.4971484552674854,
+  "features": [
+    "ret",
+    "ret_lag1",
+    "ret_lag2",
+    "ret_lag3",
+    "realized_vol",
+    "ret_vol_short",
+    "ret_vol_long",
+    "volume_ratio",
+    "btc_ret",
+    "btc_ret_lag1",
+    "btc_rv",
+    "eth_ret",
+    "eth_ret_lag1",
+    "eth_rv",
+    "btc_news_roll",
+    "btc_news_score",
+    "eth_news_roll",
+    "eth_news_score",
+    "mkt_news_roll",
+    "mkt_news_score",
+    "hour_sin",
+    "hour_cos",
+    "coin_link",
+    "coin_ltc",
+    "coin_sol"
+  ],
+  "dropped_count_features": true,
+  "model_params": {
+    "max_iter": 200,
+    "learning_rate": 0.05,
+    "max_depth": 3,
+    "min_samples_leaf": 50,
+    "l2_regularization": 1.0,
+    "random_state": 42
+  },
+  "created_at": "20261112T1445"
+}

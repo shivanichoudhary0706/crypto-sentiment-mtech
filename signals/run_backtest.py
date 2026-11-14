@@ -7,6 +7,11 @@ Run from the project root:
     python -m signals.run_backtest                 # last `test_days` days (config.yaml)
     python -m signals.run_backtest --days 30
     python -m signals.run_backtest --start 2026-08-15 --end 2026-10-14
+    python -m signals.run_backtest --freq 4h --start 2026-07-01
+
+--freq picks signal_model.per_freq.<freq> settings (same resolver as run_signals).
+Retraining is once per simulated DAY at every bar size unless --retrain-every is
+given. Results go to <output_dir>/<freq>/ so 1h and 4h runs never overwrite.
 
 Outputs (reports/backtest/):
     summary.csv       one row per variant x coin (+ portfolio) -- the results table
@@ -28,7 +33,7 @@ from config.logging_config import get_logger
 from lag_detection.config import to_utc
 from signals import store
 from signals.backtest import VARIANTS, evaluate, walk_forward
-from signals.config import load_backtest_config, load_config
+from signals.config import FREQ_SECONDS, FREQS, load_backtest_config, load_config
 from signals.dataset import build_model_frame
 
 logger = get_logger(__name__)
@@ -73,9 +78,13 @@ def main(argv=None) -> None:
     p.add_argument("--end", help="Test window end, exclusive (UTC date)")
     p.add_argument("--retrain-every", type=int, help="Retrain every N bars (overrides config)")
     p.add_argument("--fee-bps", type=float, help="Fee per position change in bps (overrides config)")
+    p.add_argument("--freq", choices=FREQS, help="Bar size (default: signal_model.freq)")
     args = p.parse_args(argv)
 
-    cfg, bt = load_config(), load_backtest_config()
+    cfg, bt = load_config(args.freq), load_backtest_config()
+    if cfg.freq != load_config().freq and not args.retrain_every:
+        # retrain_every_bars in config is counted in default-freq bars; keep it once a day
+        bt = dataclasses.replace(bt, retrain_every_bars=max(1, round(86400 / FREQ_SECONDS[cfg.freq])))
     if args.days:
         bt = dataclasses.replace(bt, test_days=args.days)
     if args.retrain_every:
@@ -115,7 +124,7 @@ def main(argv=None) -> None:
     logger.info("Replayed %d signals in %.0fs", len(preds), time.perf_counter() - t0)
     print_report(metrics)
 
-    out = Path(bt.output_dir)
+    out = Path(bt.output_dir) / cfg.freq
     out.mkdir(parents=True, exist_ok=True)
     metrics.to_csv(out / "summary.csv", index=False)
     traded.to_csv(out / "predictions.csv", index=False)

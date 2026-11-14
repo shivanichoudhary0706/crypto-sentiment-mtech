@@ -15,7 +15,9 @@ Run standalone with: python -m streaming.market_consumer
 """
 
 import json
+import logging
 import math
+import os
 from datetime import datetime, timezone
 
 import psycopg2
@@ -33,6 +35,13 @@ logger = get_logger(__name__)
 # lag detection and backtesting both operate on completed candles.
 STORE_ONLY_CLOSED_CANDLES = True
 LOG_EVERY = 20
+
+# RQ3 fault injection (TEST ONLY). If set to N > 0, the consumer kills itself
+# right AFTER the N-th successful DB insert and BEFORE the Kafka offset commit.
+# This is the exact failure point where at-least-once delivery re-sends a
+# message, so it proves whether the idempotent sink blocks the duplicate.
+# Unset or 0 = normal behaviour (the switch does nothing).
+FAULT_CRASH_AFTER_WRITE = int(os.getenv("FAULT_CRASH_AFTER_WRITE", "0") or 0)
 
 INSERT_SQL = """
     INSERT INTO market_data
@@ -138,6 +147,9 @@ def run() -> None:
 
     logger.info("Market consumer started (at-least-once, manual commit). "
                 "Writing closed candles to TimescaleDB market_data table.")
+    if FAULT_CRASH_AFTER_WRITE > 0:
+        logger.warning(f"FAULT INJECTION ARMED: will crash after insert #{FAULT_CRASH_AFTER_WRITE} "
+                       f"before committing its offset (RQ3 test).")
 
     try:
         for msg in consumer:
@@ -170,6 +182,14 @@ def run() -> None:
                 consumer.commit()
                 continue
 
+            # RQ3 fault injection: crash AFTER the DB write, BEFORE the commit.
+            if inserted and FAULT_CRASH_AFTER_WRITE > 0 and written + 1 == FAULT_CRASH_AFTER_WRITE:
+                logger.critical(f"FAULT INJECTION: crashing after DB write, BEFORE offset commit: "
+                                f"{row['symbol']} @ {row['time'].isoformat()} ({where})")
+                for h in logger.handlers + logging.getLogger().handlers:
+                    h.flush()
+                os._exit(137)  # hard kill: no finally, no commit, no clean close
+
             # 3) Safe to acknowledge.
             consumer.commit()
             if inserted:
@@ -179,6 +199,8 @@ def run() -> None:
                                 f"partial_skipped={skipped_partial}, malformed={malformed}")
             else:
                 duplicates += 1
+                logger.info(f"Duplicate suppressed by ON CONFLICT (redelivered message): "
+                            f"{row['symbol']} @ {row['time'].isoformat()} ({where})")
 
     except KeyboardInterrupt:
         logger.info("Market consumer stopped by user.")

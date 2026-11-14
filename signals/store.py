@@ -85,7 +85,7 @@ def upsert_signals(conn, table: str, signals: pd.DataFrame) -> int:
         sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c))
         for c in SIGNAL_COLUMNS if c not in ("symbol", "freq", "bucket"))
     q = sql.SQL("INSERT INTO {t} ({cols}) VALUES %s "
-                "ON CONFLICT (symbol, freq, bucket) DO UPDATE SET {u}, created_at = now()").format(
+                "ON CONFLICT (symbol, freq, bucket) DO UPDATE SET {u}").format(
         t=sql.Identifier(table), cols=cols, u=updates)
     records = []
     for r in signals[list(SIGNAL_COLUMNS)].itertuples(index=False, name=None):

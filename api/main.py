@@ -6,6 +6,8 @@ Interactive docs:        http://localhost:8000/docs
 import csv
 import json
 import logging
+import pandas as pd
+from signals.paper_trade import evaluate as paper_trade_evaluate
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -141,6 +143,32 @@ def signals_history(coin: str, hours: int = Query(96, ge=1, le=1440), freq: str 
     return {"symbol": symbol, "freq": freq, "hours": hours, "rows": rows}
 
 
+@app.get("/paper-trade")
+def paper_trade(freq: str = "1h", cost_bps: float = Query(10.0, ge=0, le=100),
+                since: Optional[datetime] = None, until: Optional[datetime] = None):
+    """Live paper trade of FROZEN signals (preliminary live operational validation).
+
+    Window is on valid_from (decision time), [since, until). Pass times with a zone,
+    e.g. 2026-11-14T03:00:00Z. Read-only.
+    """
+    sql = ["SELECT bucket, valid_from, symbol, coin, freq, close, prob_up, action,",
+           "       model_version, created_at",
+           "FROM signals",
+           "WHERE freq = %s AND model_version LIKE %s"]
+    params = [check_freq(freq), "frozen-%"]
+    if since is not None:
+        sql.append("AND valid_from >= %s")
+        params.append(since)
+    if until is not None:
+        sql.append("AND valid_from < %s")
+        params.append(until)
+    sql.append("ORDER BY symbol, valid_from")
+    rows = db.fetch_all("\n".join(sql), tuple(params))
+    if not rows:
+        return {"summary": None, "pnl": [], "equity": [], "operations": None, "signals": []}
+    return paper_trade_evaluate(pd.DataFrame(rows), pd.Timedelta(freq), cost_bps=cost_bps)
+
+
 @app.get("/news/recent")
 def news_recent(limit: int = Query(20, ge=1, le=200), coin: Optional[str] = None):
     return db.fetch_all("""
@@ -154,10 +182,13 @@ def news_recent(limit: int = Query(20, ge=1, le=200), coin: Optional[str] = None
 
 
 @app.get("/backtest/summary")
-def backtest_summary():
-    run_file = REPORTS / "backtest" / "run.json"
+def backtest_summary(freq: str = "1h"):
+    d = REPORTS / "backtest" / check_freq(freq)
+    if not d.exists():                       # reports written before per-freq folders
+        d = REPORTS / "backtest"
+    run_file = d / "run.json"
     return {"run": read_json(run_file) if run_file.exists() else None,
-            "rows": read_csv(REPORTS / "backtest" / "summary.csv")}
+            "rows": read_csv(d / "summary.csv")}
 
 
 @app.get("/backtest/tuning")

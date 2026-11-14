@@ -30,6 +30,12 @@ sentiment_sources:
         url: "https://www.theblock.co/rss.xml"
       - name: "cryptoslate"
         url: "https://cryptoslate.com/feed/"
+      - name: "bitcoinmagazine"
+        url: "https://bitcoinmagazine.com/feed"
+      - name: "beincrypto"
+        url: "https://beincrypto.com/feed/"
+      - name: "cryptonews"
+        url: "https://crypto.news/feed/"  
     poll_interval_seconds: 300
   gdelt:
     query_terms:
@@ -97,8 +103,8 @@ signal_model:
   freq: "1h"                 # model works on hourly bars
   per_freq:
     4h:
-      train_window_bars: 360   # 60 days of 4h bars
-      min_train_bars: 120      # 20 days minimum history
+      train_window_bars: 540   # 90 days of 4h bars
+      min_train_bars: 125      # 20 days minimum history
   horizon_bars: 1            # predict the next 1 bar (1 hour)
   buy_threshold: 0.55        # P(up) >= 0.55 -> BUY
   sell_threshold: 0.45       # P(up) <= 0.45 -> SELL, otherwise HOLD
